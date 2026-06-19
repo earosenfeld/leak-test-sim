@@ -11,13 +11,79 @@ Everything is validated against **closed-form** leak-test relationships in the t
 suite (59 tests). No hand-waving: given a known volume and conductance, the simulator
 reproduces the analytic `ΔP`, `τ`, and leak rate to tolerance.
 
+### Test-sequence state machine
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> Fill
+    Fill: FILL
+    Fill: charge part to test pressure
+    Settle: SETTLE / STABILIZE
+    Settle: hold isolated, let fill pressure + temperature transients decay
+    Test: TEST
+    Test: isolated window, sample P at start & end, take ΔP
+    Exhaust: EXHAUST
+    Exhaust: vent back to atmosphere
+
+    Fill --> Settle
+    Settle --> Test
+    Test --> Exhaust
+    Exhaust --> [*]
+
+    Test --> LeakCalc: ΔP, V, Δt
+    LeakCalc: leak rate = |ΔP|·V/Δt
+    LeakCalc --> TempComp: gas T(t)
+    TempComp: temperature compensation P·(T_ref/T)
+    TempComp --> Decide: compensated leak rate
+    Decide: guard-banded decision
+    state Decide {
+        direction LR
+        [*] --> ACCEPT: below accept threshold
+        [*] --> RETEST: within guard band
+        [*] --> REJECT: at or above reject limit
+    }
 ```
-fill ──▶ settle ──▶ test ──▶ exhaust
- ▲          ▲         ▲          ▲
- charge   let fill   isolated   vent
- to P     transients ΔP over    to atm
-          decay      window
-```
+
+---
+
+## Visualizations
+
+Generated from the real API by [`scripts/make_figures.py`](scripts/make_figures.py)
+(`.venv/bin/python scripts/make_figures.py`) — every trace is simulated, not drawn.
+
+### Pressure-decay sequence — the full cycle
+
+![Pressure vs time across fill, settle, test and exhaust, with the test-window ΔP annotated](assets/pressure_decay_sequence.png)
+
+Pressure across **fill → settle → test → exhaust** (phases shaded). The part is
+isolated through settle + test; ΔP is taken **only over the TEST window** and
+converted to a leak rate.
+
+### Temperature compensation — the differentiator
+
+![A sealed part with zero real leak: the uncompensated trace falls and false-rejects, the temperature-compensated trace stays flat and passes](assets/temperature_compensation.png)
+
+A **perfectly sealed part (zero real leak)** with a fill-heating transient. The
+**uncompensated** trace (red) cools and falls — reading ~10 sccm, a **false
+reject**. The **temperature-compensated** trace `P·(T_ref/T)` (blue) stays flat
+→ **0 sccm → accept**. This is the headline value of a real leak-test station.
+
+### Gage R&R — measurement capability
+
+![Histogram of repeated Monte-Carlo leak measurements of one part against the reject limit, annotated with %GRR](assets/gage_rr.png)
+
+400 Monte-Carlo measurements of **one part** (instrument noise only). The spread
+is the gauge **repeatability**; `%GRR`, `σ` and number of distinct categories
+(ndc) gauge whether the tester can be trusted against the tolerance.
+
+### Guard-banded decision — accept / retest / reject
+
+![Measured leak rate on a number line with ACCEPT, RETEST and REJECT zones and the guard band drawn between the accept threshold and the reject limit](assets/decision_guardband.png)
+
+The guard band pulls the accept threshold in by the measurement uncertainty,
+splitting the scale into **ACCEPT · RETEST · REJECT**. Example points are placed
+and classified by the real `decide()`.
 
 ---
 

@@ -35,6 +35,8 @@ from leak_test_sim import (
     DecisionConfig, decide, Verdict, guard_band_from_uncertainty,
     conductance_from_leak_rate, sccm_to_pa_m3_s, pa_m3_s_to_sccm,
     monte_carlo_leak_measurement,
+    UncertaintyModel, measurement_uncertainty, systematic_error, noise_error,
+    optimize_cycle_time,
 )
 
 ASSETS = Path(__file__).resolve().parent.parent / "assets"
@@ -372,12 +374,130 @@ def fig_decision_guardband():
     return out
 
 
+# =============================================================================
+# Figure 5 — cycle-time optimization: uncertainty vs settle/test time
+# =============================================================================
+def fig_test_time_optimization():
+    """Measurement uncertainty vs cycle time, and the minimum-time operating point.
+
+    Left:  fix the TEST window and sweep SETTLE -- the *systematic* (settle-
+           limited) term decays ~exp(-settle/tau) while the *random* (noise) term
+           is flat; their RSS is the total. Where the total crosses the target is
+           the settle the line needs.
+    Right: the production view -- the minimum uncertainty achievable for a given
+           *total cycle* budget (settle+test optimally split at each budget),
+           with the target line and the recommended minimum-time point marked.
+    """
+    m = UncertaintyModel(
+        test_pressure=300_000.0, volume=1.0e-4, T_ref=293.15,
+        dT0=4.0, tau_thermal=8.0, sigma_P=8.0,
+        noise_floor=sccm_to_pa_m3_s(0.05),
+    )
+    target = sccm_to_pa_m3_s(0.5)
+    target_sccm = _sccm(target)
+
+    rec = optimize_cycle_time(target, m, settle_bounds=(0.0, 60.0),
+                              test_bounds=(0.5, 30.0))
+
+    fig, (axL, axR) = plt.subplots(1, 2, figsize=(11.6, 5.2))
+
+    # ----- LEFT: settle sweep at a fixed test window -------------------------
+    test_fixed = 5.0
+    settles = np.linspace(0.0, 45.0, 400)
+    u_sys = np.array([systematic_error(s, test_fixed, m) for s in settles])
+    u_noise = np.full_like(settles, noise_error(test_fixed, m))
+    u_tot = np.array([measurement_uncertainty(s, test_fixed, m) for s in settles])
+
+    axL.plot(settles, _sccm(u_sys), color=PALETTE[1], lw=2.0, ls="--",
+             label="systematic  (thermal transient, $\\sim e^{-t/\\tau}$)")
+    axL.plot(settles, _sccm(u_noise), color=PALETTE[2], lw=2.0, ls=":",
+             label="random  (transducer noise, $\\sqrt{2}\\sigma_P V/t$)")
+    axL.plot(settles, _sccm(u_tot), color=PALETTE[0], lw=2.6,
+             label="total (RSS)")
+    axL.axhline(target_sccm, color="#475569", lw=1.4, ls="-.",
+                label=f"target = {target_sccm:.2f} sccm")
+
+    # settle needed to hit target at this fixed test window
+    cross = np.argmin(np.abs(u_tot - target))
+    s_cross = settles[cross]
+    axL.plot(s_cross, target_sccm, "o", color="#1e3a8a", ms=9, zorder=6,
+             markeredgecolor="white", markeredgewidth=1.2)
+    axL.annotate(f"settle ≈ {s_cross:.0f} s\n(test fixed at {test_fixed:.0f} s)",
+                 xy=(s_cross, target_sccm), xytext=(s_cross + 3.0, target_sccm * 6),
+                 fontsize=9.0, color="#1e3a8a",
+                 arrowprops=dict(arrowstyle="-", color="#1e3a8a", lw=1.0))
+
+    axL.set_yscale("log")
+    axL.set_xlabel("settle time (s)")
+    axL.set_ylabel("leak-rate uncertainty (sccm)")
+    axL.set_title(f"Uncertainty vs settle time  (TEST = {test_fixed:.0f} s)")
+    axL.legend(loc="upper right", fontsize=8.5)
+
+    # ----- RIGHT: optimal cost frontier -- min uncertainty vs total budget ---
+    budgets = np.linspace(4.0, 50.0, 120)
+    best_u, best_split = [], []
+    for tot in budgets:
+        # split the budget into settle+test; test in [0.5, tot-0.5]
+        tests = np.linspace(0.5, max(tot - 0.5, 0.5), 120)
+        us = np.array([measurement_uncertainty(tot - t, t, m) for t in tests])
+        j = int(np.argmin(us))
+        best_u.append(us[j])
+        best_split.append((tot - tests[j], tests[j]))
+    best_u = np.array(best_u)
+
+    axR.plot(budgets, _sccm(best_u), color=PALETTE[0], lw=2.6,
+             label="min achievable uncertainty")
+    # shade the feasible (meets-target) region of cycle budgets
+    axR.axhline(target_sccm, color="#475569", lw=1.4, ls="-.",
+                label=f"target = {target_sccm:.2f} sccm")
+    floor_sccm = _sccm(m.noise_floor)
+    axR.axhline(floor_sccm, color="#94a3b8", lw=1.0, ls=":")
+    axR.text(budgets[-1], floor_sccm * 1.04, "noise floor", ha="right",
+             va="bottom", fontsize=8.0, color="#94a3b8")
+
+    # recommended minimum-time operating point
+    axR.axvline(rec.total_t, color=PALETTE[4], lw=1.4, ls="--", alpha=0.8)
+    axR.plot(rec.total_t, _sccm(rec.uncertainty), "*", color=PALETTE[4],
+             ms=18, zorder=7, markeredgecolor="white", markeredgewidth=1.0)
+    axR.annotate(
+        f"recommended min cycle\n"
+        f"settle {rec.settle_t:.0f} s + test {rec.test_t:.0f} s = "
+        f"{rec.total_t:.0f} s\n→ {_sccm(rec.uncertainty):.2f} sccm  (meets target)",
+        xy=(rec.total_t, _sccm(rec.uncertainty)),
+        xytext=(rec.total_t - 1.0, target_sccm * 5.5),
+        ha="right", va="center", fontsize=9.0, color=PALETTE[4],
+        bbox=dict(boxstyle="round,pad=0.35", fc="white", ec=PALETTE[4], lw=1.0),
+        arrowprops=dict(arrowstyle="-", color=PALETTE[4], lw=1.2,
+                        connectionstyle="arc3,rad=0.2"))
+
+    axR.set_yscale("log")
+    axR.set_xlabel("total cycle time: settle + test (s)")
+    axR.set_ylabel("leak-rate uncertainty (sccm)")
+    axR.set_title("Minimum cycle time to meet a target uncertainty")
+    axR.legend(loc="upper right", fontsize=8.5)
+
+    fig.suptitle("Cycle-time optimization: the settle-time-vs-error tradeoff, made quantitative",
+                 fontsize=13, fontweight="bold")
+    fig.text(0.012, 0.005,
+             f"V = {m.volume*1e6:.0f} cc  ·  test P = {m.test_pressure/1000:.0f} kPa  ·  "
+             f"$\\tau_{{thermal}}$ = {m.tau_thermal:.0f} s  ·  $\\Delta T_0$ = {m.dT0:.0f} K  ·  "
+             f"$\\sigma_P$ = {m.sigma_P:.0f} Pa  ·  cycle time is money: shortest cycle meeting the target wins",
+             fontsize=8.0, color="#64748b")
+    fig.tight_layout(rect=(0, 0.02, 1, 0.96))
+
+    out = ASSETS / "test_time_optimization.png"
+    fig.savefig(out)
+    plt.close(fig)
+    return out
+
+
 def main():
     figs = [
         fig_pressure_decay_sequence(),
         fig_temperature_compensation(),
         fig_gage_rr(),
         fig_decision_guardband(),
+        fig_test_time_optimization(),
     ]
     print("Wrote figures:")
     for f in figs:

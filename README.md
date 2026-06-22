@@ -85,6 +85,16 @@ The guard band pulls the accept threshold in by the measurement uncertainty,
 splitting the scale into **ACCEPT · RETEST · REJECT**. Example points are placed
 and classified by the real `decide()`.
 
+### Cycle-time optimization — the settle-vs-error tradeoff
+
+![Left: measurement uncertainty vs settle time at a fixed test window, with the decaying systematic term, the flat noise term, and their RSS total crossing the target. Right: the minimum achievable uncertainty vs total cycle budget with the recommended minimum-time operating point marked](assets/test_time_optimization.png)
+
+On a line, every second of **settle + test** is throughput. Longer **settle**
+lets the fill thermal transient decay (smaller *systematic* error,
+`~exp(-settle/τ)`); longer **test** grows the ΔP signal against transducer noise
+(smaller *random* error, `~1/test`). `optimize_cycle_time()` finds the **shortest
+total cycle** whose RSS uncertainty still meets the target — here ~35 s.
+
 ---
 
 ## The physics
@@ -199,6 +209,78 @@ on production testers. The guard band is typically `k·σ` of the gauge repeatab
 - **Gage R&R**: Monte-Carlo repeated measurements → repeatability σ, %GRR vs
   tolerance, number of distinct categories (AIAG MSA). A closed-form
   `σ_leak = √2 · σ_noise · V / Δt` cross-checks the Monte-Carlo result.
+
+---
+
+## Cycle-time optimization
+
+On a production line **cycle time is money** — every second of *settle* + *test*
+is a part the station can't make. But cutting those times degrades the
+measurement two competing ways, so the minimum cycle that still meets a target
+uncertainty can be **computed** (`leak_test_sim/optimization.py`), not guessed.
+
+![Measurement uncertainty vs cycle time: the decaying systematic term, the noise term, the RSS total, the target line, and the recommended minimum-time operating point](assets/test_time_optimization.png)
+
+### The uncertainty model
+
+The measured leak rate `Q = |ΔP|·V/test` carries two independent errors:
+
+| Term | Driver | Form | Shrinks with |
+|---|---|---|---|
+| **Systematic** | residual fill **thermal transient** still decaying into the test window | `e_sys = \|P·ΔT_win/T\|·V/test`,  `ΔT_win = ΔT₀·e^(−settle/τ)·(1−e^(−test/τ))` | **settle** (`~e^(−settle/τ)`) |
+| **Random** | **transducer noise** on the two ΔP endpoint samples | `e_noise = √2·σ_P·V/test` (= the Gage R&R repeatability) | **test** (`~1/test`) |
+
+They combine as a **root-sum-square**, with an optional irreducible floor
+(drift / resolution / temperature-sensor accuracy):
+
+```
+u(settle, test) = √( e_sys² + e_noise² + noise_floor² )
+```
+
+`u` is **monotone decreasing** in both settle (systematic decays) and test (noise
+decays), flattening toward `noise_floor`. The systematic term reuses the real
+ideal-gas relation `apparent_dp_from_dt()`; the noise term *is*
+`noise_to_leak_rate_sigma()` from the Gage R&R module — so the model is the
+closed form of the same physics the full sequence simulator integrates.
+
+### Finding the minimum cycle
+
+```python
+from leak_test_sim import UncertaintyModel, optimize_cycle_time, sccm_to_pa_m3_s, pa_m3_s_to_sccm
+
+m = UncertaintyModel(test_pressure=300_000.0, volume=1e-4,
+                     dT0=4.0, tau_thermal=8.0, sigma_P=8.0)
+rec = optimize_cycle_time(sccm_to_pa_m3_s(0.5), m)     # target = 0.5 sccm
+
+print(rec.settle_t, rec.test_t, rec.total_t)           # ≈ 31.5 s + 4.0 s = 35.5 s
+print(pa_m3_s_to_sccm(rec.uncertainty), rec.met)       # ≈ 0.50 sccm, True
+```
+
+`optimize_cycle_time()` scans the `(settle, test)` plane and returns the pair with
+the **smallest total cycle** whose modelled `u ≤ target`. A tighter target costs
+more time; a target below the floor is flagged `feasible=False` and the
+closest-achievable point is returned.
+
+### Early stop with a Wald SPRT
+
+For lines where most parts are clearly good (or clearly bad),
+`sequential_decision()` runs a **Sequential Probability Ratio Test**: it samples
+the gauge pressure and accepts/rejects the instant the accumulating leak signal
+crosses Wald's log-likelihood bounds — cutting the **average** test time far below
+a fixed window while holding the type-I/type-II error rates.
+
+```python
+from leak_test_sim import sequential_decision, conductance_from_leak_rate
+
+reject = sccm_to_pa_m3_s(5.0)
+good = conductance_from_leak_rate(sccm_to_pa_m3_s(1.0), m.test_pressure)
+res = sequential_decision(reject, m, C=good, max_test_time=30.0, settle_t=15.0)
+print(res.decision, res.test_time)     # accept, well under the 30 s window
+```
+
+`settle_t` references the thermal profile to the start of settle, so the SPRT
+sees only the **residual** transient — too short a settle can still false-reject a
+good part (exactly the tradeoff above); an adequate settle clears it.
 
 ---
 

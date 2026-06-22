@@ -73,6 +73,13 @@ from .gage_rr import (
     GageRRResult, monte_carlo_leak_measurement, noise_to_leak_rate_sigma,
 )
 
+# cycle-time optimization
+from .optimization import (
+    UncertaintyModel, measurement_uncertainty, systematic_error, noise_error,
+    CycleRecommendation, optimize_cycle_time,
+    SPRTDecision, SPRTResult, sequential_decision,
+)
+
 __all__ = [
     "__version__",
     # units
@@ -101,4 +108,8 @@ __all__ = [
     "viscous_correlation", "molecular_correlation", "correlate_leak_rate",
     # gage R&R
     "GageRRResult", "monte_carlo_leak_measurement", "noise_to_leak_rate_sigma",
+    # cycle-time optimization
+    "UncertaintyModel", "measurement_uncertainty", "systematic_error", "noise_error",
+    "CycleRecommendation", "optimize_cycle_time",
+    "SPRTDecision", "SPRTResult", "sequential_decision",
 ]

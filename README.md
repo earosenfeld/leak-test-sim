@@ -1,5 +1,7 @@
 # leak-test-sim
 
+[![CI](https://github.com/earosenfeld/leak-test-sim/actions/workflows/ci.yml/badge.svg)](https://github.com/earosenfeld/leak-test-sim/actions/workflows/ci.yml)
+
 A physically-correct **pressure-decay & flow leak-test simulator** for manufacturing
 quality engineering. It models the full test the way production instruments
 (Cincinnati Test Systems, ATEQ, Zaxis) run it — **fill → settle → test → exhaust** —
@@ -8,7 +10,7 @@ mechanism and its compensation, instrument noise / resolution / drift, guard-ban
 pass/fail, and stretch physics for flow regimes, gas correlation, and Gage R&R.
 
 Everything is validated against **closed-form** leak-test relationships in the test
-suite (59 tests). No hand-waving: given a known volume and conductance, the simulator
+suite (75 tests). No hand-waving: given a known volume and conductance, the simulator
 reproduces the analytic `ΔP`, `τ`, and leak rate to tolerance.
 
 ### Test-sequence state machine
@@ -323,11 +325,15 @@ python examples/run_leak_test.py
 
 ```bash
 cd leak-test-sim
+# with uv
 uv venv .venv --python 3.11
-uv pip install --python .venv/bin/python numpy scipy pytest matplotlib
-uv pip install --python .venv/bin/python -e .
+uv pip install --python .venv/bin/python -e '.[plot,dev]'
 
-.venv/bin/python -m pytest -q          # 59 tests, all green
+# or plain pip
+python -m venv .venv && source .venv/bin/activate
+pip install -e '.[plot,dev]'
+
+.venv/bin/python -m pytest -q          # 75 tests, all green
 .venv/bin/python examples/run_leak_test.py
 ```
 
@@ -345,7 +351,7 @@ leak_test_sim/
 ├── decision.py      # guard-banded accept / reject / indeterminate
 ├── flow.py          # Knudsen number, Poiseuille vs molecular, air↔He correlation
 └── gage_rr.py       # Monte-Carlo measurement capability (%GRR, ndc)
-tests/               # 59 closed-form validation tests
+tests/               # 75 closed-form validation tests
 examples/run_leak_test.py
 ```
 
